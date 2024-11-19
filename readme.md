@@ -19,3 +19,7 @@ requires installing openjdk (e.g. using conda), ask chatgpt for help if needed
 
 - zipping the images is not worth it
 
+### Future
+- do focus stacking
+
+

@@ -3,6 +3,8 @@ from pathlib import Path
 import subprocess
 from fire import Fire
 import re
+import cv2
+import numpy as np
 
 
 def extract_largest_image_info(metadata_path="out/metadata.txt"):
@@ -68,17 +70,50 @@ def save_center_crop(imgpath, series, width, height, z_depths, dstdir, bftools_p
         print(f"Saved center crop for Z depth {z} to {output_path}")
 
 
-def main(imgpath):
+def compute_sharpness(image_path):
+    # Load the image in grayscale
+    image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        raise FileNotFoundError(f"Image not found: {image_path}")
+    # Use the Laplacian method to calculate sharpness
+    return cv2.Laplacian(image, cv2.CV_64F).var()
+
+
+def select_best_focus_images(dstdir, z_depths, n=1):
+    sharpness_values = []
+    # Calculate sharpness for each image
+    for z in range(z_depths):
+        image_path = dstdir / f"img_center_crop_z{z}.tiff"
+        sharpness = compute_sharpness(image_path)
+        sharpness_values.append((z, sharpness))
+        print(f"Z depth {z}: Sharpness = {sharpness}")
+
+    # Find the n consecutive images with the highest sharpness sum
+    best_start_index = 0
+    max_sharpness_sum = sum([sharpness_values[i][1] for i in range(n)])
+    for i in range(1, len(sharpness_values) - n + 1):
+        sharpness_sum = sum([sharpness_values[i + j][1] for j in range(n)])
+        if sharpness_sum > max_sharpness_sum:
+            max_sharpness_sum = sharpness_sum
+            best_start_index = i
+
+    best_indices = [sharpness_values[best_start_index + i][0] for i in range(n)]
+    print(f"Best consecutive Z depths: {best_indices} with sharpness sum {max_sharpness_sum}")
+    return best_indices
+
+
+def main(imgpath, n_focuses=1, reset=False):
     imgpath = Path(imgpath)
     assert imgpath.exists()
     dstdir = Path("out")
-    if dstdir.exists():
+    if reset and dstdir.exists():
         shutil.rmtree(dstdir)
     dstdir.mkdir(exist_ok=True)
     run_showinf(imgpath)  # extract metadata to file
     largest_series, largest_width, largest_height, z_depths = extract_largest_image_info()
     print(f"Largest Series: {largest_series}, Width: {largest_width}, Height: {largest_height}, Z Depths: {z_depths}")
     save_center_crop(imgpath, largest_series, largest_width, largest_height, z_depths, dstdir)  # extract center crop for all depths
+    best_focuses = select_best_focus_images(dstdir, z_depths, n_focuses)  # find the best focus images
 
 
 if __name__ == "__main__":
