@@ -130,7 +130,7 @@ def save_full_image_crops(
                     print(
                         f"Converted TIFF to JPEG for Z depth {z}, tile ({i}, {j}) to {jpeg_output_path}"
                     )
-                except DecompressionBombWarning as e:
+                except Image.DecompressionBombWarning as e:
                     print(f"Warning: {e} for image {tiff_output_path}")
 
                 # Remove the TIFF file
