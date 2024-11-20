@@ -5,6 +5,12 @@ from fire import Fire
 import re
 import cv2
 import numpy as np
+from PIL import Image
+import warnings
+
+# Increase the decompression bomb limit to handle large images
+Image.MAX_IMAGE_PIXELS = None
+warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 
 
 def extract_largest_image_info(metadata_path="out/metadata.txt"):
@@ -75,6 +81,63 @@ def save_center_crop(
         print(f"Saved center crop for Z depth {z} to {output_path}")
 
 
+def save_full_image_crops(
+    imgpath, series, width, height, best_focuses, dstdir, bftools_path="bftools"
+):
+    # Define maximum tile size
+    max_tile_size = 2**14
+
+    # Loop through each best focus and divide the image into tiles
+    for z in best_focuses:
+        # Calculate number of tiles in x and y direction
+        num_tiles_x = (width + max_tile_size - 1) // max_tile_size
+        num_tiles_y = (height + max_tile_size - 1) // max_tile_size
+
+        for i in range(num_tiles_x):
+            for j in range(num_tiles_y):
+                # Calculate crop coordinates
+                crop_x = i * max_tile_size
+                crop_y = j * max_tile_size
+                crop_width = min(max_tile_size, width - crop_x)
+                crop_height = min(max_tile_size, height - crop_y)
+
+                # Set output paths
+                tiff_output_path = dstdir / f"img_full_crop_z{z}_tile_{i}_{j}.tiff"
+                jpeg_output_path = dstdir / f"img_full_crop_z{z}_tile_{i}_{j}.jpeg"
+
+                # Run bfconvert to save TIFF tile
+                command = [
+                    f"{bftools_path}/bfconvert",
+                    f"-series",
+                    str(series),
+                    f"-crop",
+                    f"{crop_x},{crop_y},{crop_width},{crop_height}",
+                    f"-z",
+                    str(z),
+                    str(imgpath),
+                    str(tiff_output_path),
+                ]
+
+                subprocess.run(command)
+                print(
+                    f"Saved TIFF tile for Z depth {z}, tile ({i}, {j}) to {tiff_output_path}"
+                )
+
+                # Convert TIFF to JPEG using PIL and then remove the TIFF
+                try:
+                    with Image.open(tiff_output_path) as img:
+                        img.convert("RGB").save(jpeg_output_path, "JPEG")
+                    print(
+                        f"Converted TIFF to JPEG for Z depth {z}, tile ({i}, {j}) to {jpeg_output_path}"
+                    )
+                except DecompressionBombWarning as e:
+                    print(f"Warning: {e} for image {tiff_output_path}")
+
+                # Remove the TIFF file
+                tiff_output_path.unlink()
+                print(f"Removed TIFF file: {tiff_output_path}")
+
+
 def compute_sharpness(image_path):
     # Load the image in grayscale
     image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
@@ -123,12 +186,17 @@ def main(imgpath, n_focuses=1, reset=False):
     print(
         f"Largest Series: {largest_series}, Width: {largest_width}, Height: {largest_height}, Z Depths: {z_depths}"
     )
-    save_center_crop(
-        imgpath, largest_series, largest_width, largest_height, z_depths, dstdir
-    )  # extract center crop for all depths
+    if reset or not Path("out/img_center_crop_z0.tiff").exists():
+        save_center_crop(
+            imgpath, largest_series, largest_width, largest_height, z_depths, dstdir
+        )  # extract center crop for all depths
     best_focuses = select_best_focus_images(
         dstdir, z_depths, n_focuses
     )  # find the best focus images
+    if reset or not len(list(Path("out").glob("img_full_crop_z*_tile_0_0.jpeg"))):
+        save_full_image_crops(
+            imgpath, largest_series, largest_width, largest_height, best_focuses, dstdir
+        )  # save full image crops for best focuses
 
 
 if __name__ == "__main__":
