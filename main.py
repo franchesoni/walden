@@ -260,6 +260,11 @@ def main(imgpath, n_focuses=1, reset=False):
         create_composite_image(
             best_focuses, largest_width, largest_height, dstdir, downscale_factor=16
         )  # create a composite lower resolution image
+    # save metadata
+    metadata_output_path = dstdir / "extracted_metadata.txt"
+    with open(metadata_output_path, "w") as metadata_file:
+        metadata_file.write(f"Largest Series: {largest_series}\nWidth: {largest_width}\nHeight: {largest_height}\nZ Depths: {z_depths}\nBest focuses: {best_focuses}")
+    print(f"Saved extracted metadata to {metadata_output_path}")
 
 
 if __name__ == "__main__":
