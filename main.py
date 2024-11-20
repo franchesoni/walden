@@ -172,6 +172,65 @@ def select_best_focus_images(dstdir, z_depths, n=1):
     return best_indices
 
 
+def create_composite_image(best_focuses, width, height, dstdir, downscale_factor=4):
+    # Create a blank canvas for the composite image
+    composite_width = width // downscale_factor
+    composite_height = height // downscale_factor
+    composite_image = np.zeros((composite_height, composite_width, 3), dtype=np.float32)
+    count_matrix = np.zeros((composite_height, composite_width), dtype=np.float32)
+
+    # Define maximum tile size
+    max_tile_size = 2**14
+
+    # Loop through each best focus and average the downscaled tiles into the composite image
+    for z in best_focuses:
+        num_tiles_x = (width + max_tile_size - 1) // max_tile_size
+        num_tiles_y = (height + max_tile_size - 1) // max_tile_size
+
+        for i in range(num_tiles_x):
+            for j in range(num_tiles_y):
+                jpeg_output_path = dstdir / f"img_full_crop_z{z}_tile_{i}_{j}.jpeg"
+                print(f"Processing img_full_crop_z{z}_tile_{i}_{j}.jpeg", end="\r")
+                if not jpeg_output_path.exists():
+                    continue
+
+                # Open the JPEG tile and downscale it
+                with Image.open(jpeg_output_path) as tile:
+                    tile_downscaled = tile.resize(
+                        (
+                            tile.width // downscale_factor,
+                            tile.height // downscale_factor,
+                        ),
+                        Image.LANCZOS,
+                    )
+                    tile_array = np.array(tile_downscaled, dtype=np.float32)
+
+                    # Calculate where to paste the downscaled tile in the composite image
+                    paste_x = (i * max_tile_size) // downscale_factor
+                    paste_y = (j * max_tile_size) // downscale_factor
+
+                    # Update the composite image by averaging values
+                    composite_image[
+                        paste_y : paste_y + tile_array.shape[0],
+                        paste_x : paste_x + tile_array.shape[1],
+                        :,
+                    ] += tile_array
+                    count_matrix[
+                        paste_y : paste_y + tile_array.shape[0],
+                        paste_x : paste_x + tile_array.shape[1],
+                    ] += 1
+
+    # Avoid division by zero and normalize the composite image
+    count_matrix[count_matrix == 0] = 1
+    composite_image /= count_matrix[:, :, np.newaxis]
+
+    # Convert the composite image to uint8 and save it
+    composite_image = np.clip(composite_image, 0, 255).astype(np.uint8)
+    composite_output_path = dstdir / "composite_image.jpeg"
+    Image.fromarray(composite_image).save(composite_output_path, "JPEG")
+    print(f"Saved composite image to {composite_output_path}")
+
+
 def main(imgpath, n_focuses=1, reset=False):
     imgpath = Path(imgpath)
     assert imgpath.exists()
@@ -197,6 +256,10 @@ def main(imgpath, n_focuses=1, reset=False):
         save_full_image_crops(
             imgpath, largest_series, largest_width, largest_height, best_focuses, dstdir
         )  # save full image crops for best focuses
+    if reset or not Path('out/composite_image.jpeg').exists():
+        create_composite_image(
+            best_focuses, largest_width, largest_height, dstdir, downscale_factor=16
+        )  # create a composite lower resolution image
 
 
 if __name__ == "__main__":
