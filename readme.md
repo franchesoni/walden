@@ -21,6 +21,7 @@ _now we can zip the out/ folder and transfer it elsewhere, as it's less than 2GB
 - compute average dinov2reg feats for each mask, saving them along with the mask bounding box coordinates (absolute)
 - do some example annotations using qupath (e.g. points), import them
 - assign points to masks, run k-nn
+- return counts, visualize img + bbox with class
 
 
 ### Notes
