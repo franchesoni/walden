@@ -231,7 +231,7 @@ def create_composite_image(best_focuses, width, height, dstdir, downscale_factor
     print(f"Saved composite image to {composite_output_path}")
 
 
-def main(imgpath, n_focuses=1, reset=False):
+def vsi_to_jpegs(imgpath, n_focuses=1, reset=False):
     imgpath = Path(imgpath)
     assert imgpath.exists()
     dstdir = Path("out")
@@ -268,4 +268,4 @@ def main(imgpath, n_focuses=1, reset=False):
 
 
 if __name__ == "__main__":
-    Fire(main)
+    Fire(vsi_to_jpegs)
