@@ -163,6 +163,7 @@ cython_debug/
 
 bftools/
 out/
+overlapping_tiles/
 *.tiff
 *.jpeg
 *.zip
