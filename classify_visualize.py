@@ -1,3 +1,6 @@
+from pathlib import Path
+import numpy as np
+import h5py
 import csv
 import json
 import uuid
@@ -75,30 +78,29 @@ def load_bounding_boxes_csv(csv_file):
     return bboxes
 
 
-def main():
-    # Example usage
-    bboxes = [
-        (54740, 36060, 50, 68),  # row, col, height, width
-        (54536, 35848, 80, 91),
-        (54300, 35775, 112, 1200),
-    ]
-    classes = [-1, -1, 0]  # Class IDs
-
+def main(n_clusters=10):
+    # Example usage with feature clustering
     # Mapping class IDs to classification names (optional)
-    class_map = {
-        0: {"name": "Small", "color": [50, 50, 50]},
-        1: {"name": "Big", "color": [100, 0, 0]},
-    }
+    colors = [color.tolist() for color in np.random.choice(range(256), size=(n_clusters, 3), replace=False)]
+    class_map = {i : {"name": f"Cluster {i}", "color": colors[i]} for i in range(n_clusters)}
 
-    # Example usage
-    csv_file = "out/cells/global_bboxes.csv"  # Replace with your file path
+    csv_file = "out/cells/global_bboxes.csv"  
     bboxes = load_bounding_boxes_csv(csv_file)
-    classes = [(bbox[2] * bbox[3] > 100 * 100) * 1 for bbox in bboxes]
-    print(bboxes)
 
+    with h5py.File("out/cells/features.h5", 'r') as f:
+        data = f['dataset'][:]
+
+    from sklearn.cluster import KMeans
+    kmeans = KMeans(n_clusters=10, random_state=0)
+    classes = kmeans.fit_predict(data).tolist()
+    length = min(len(bboxes), len(classes))
+    bboxes, classes = bboxes[:length], classes[:length]
+
+    chosen_z = int(list(Path('out').glob("img_full_crop_z*_tile_0_0.jpeg"))[0].stem.split("z")[1].split("_")[0]) + 1
     bounding_boxes_to_geojson(
-        bboxes, classes, class_map=class_map, plane_info={"c": -1, "z": 7, "t": 0}
+        bboxes, classes, class_map=class_map, plane_info={"c": -1, "z": chosen_z, "t": 0}
     )
 
 
-main()
+if __name__ == '__main__':
+    main()
