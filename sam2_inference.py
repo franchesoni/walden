@@ -15,6 +15,29 @@ from sam2.utils.amg import build_all_layer_point_grids
 import csv
 
 
+def sort_paths_by_dimensions(paths):
+    """
+    Sort a list of paths numerically based on the dimensions in the filename.
+
+    Args:
+        paths (list of Path): List of PosixPath or file paths in the format tile_<dim1>_<dim2>.jpeg.
+
+    Returns:
+        list of Path: Sorted list of paths.
+    """
+
+    def extract_dimensions(path):
+        # Extract the part after "tile_" and before ".jpeg"
+        filename = path.stem  # Get the file name without extension
+        if filename.startswith("tile_"):
+            dims = filename[len("tile_") :].split("_")
+            return int(dims[0]), int(dims[1])  # Convert dimensions to integers
+        raise ValueError(f"unexpected path {path}")
+
+    # Sort paths using the extracted dimensions
+    return sorted(paths, key=extract_dimensions)
+
+
 def append_to_h5(new_data, feat_dim, filename="out/cells/features.h5"):
     # Create or append to an HDF5 file
     with h5py.File(filename, "a") as f:
@@ -100,7 +123,7 @@ def main(sam_size="tiny", dino_size="small", vis=False, device="cuda", reset=Tru
     )
     if dino_size == "small":
         dino = torch.hub.load(
-            "facebookresearch/dinov2", "dinov2_vits14_reg", force_reload=True
+            "facebookresearch/dinov2", "dinov2_vits14_reg", force_reload=False
         )
         dino = dino.to(device)
         dino_dim = 384
@@ -141,19 +164,22 @@ def main(sam_size="tiny", dino_size="small", vis=False, device="cuda", reset=Tru
         points_per_side=None,
         pred_iou_thresh=0.7,
         stability_score_thresh=0.90,
-        box_nms_thresh=0.5,
-        min_mask_region_area=196,  # 14x14
+        box_nms_thresh=0.3,
+        min_mask_region_area=14,  # 14x14
     )
 
     # filter masks mostly outside
     center_bbox = [256, 256, 512, 512]  # [x_min, y_min, width, height]
 
     # generate sam masks
-    if reset and Path('out/cells').exists():
+    if reset and Path("out/cells").exists():
         import shutil
-        shutil.rmtree('out/cells')
-    Path('out/cells').mkdir(exist_ok=True, parents=True)
-    tiles = sorted(Path("overlapping_tiles").glob("tile_*.jpeg"))
+
+        shutil.rmtree("out/cells")
+    Path("out/cells").mkdir(exist_ok=True, parents=True)
+    tiles = sort_paths_by_dimensions(
+        list(Path("overlapping_tiles").glob("tile_*.jpeg"))
+    )
     tile_row, tile_col = 0, 0
     for tile_path in tqdm.tqdm(tiles):
         tile_row, tile_col = int(tile_path.name.split("_")[1]), int(
@@ -222,14 +248,16 @@ def process_tile(
 
         # Downsample the segmentation to match the DINO feature map size
         seg_downsampled = cv2.resize(
-            (seg_crop*255).astype(np.uint8), (46, 46), interpolation=cv2.INTER_LINEAR
+            (seg_crop * 255).astype(np.uint8), (46, 46), interpolation=cv2.INTER_LINEAR
         )
         seg_downsampled_bool = seg_downsampled > 127  # Shape: [46, 46]
 
         # Compute the average feature within the mask
         masked_features = features[seg_downsampled_bool]
         if masked_features.size == 0:
-            print(f"mask at {mask['global_bbox']} has zero downsampled area, skipping...")
+            print(
+                f"mask at {mask['global_bbox']} has zero downsampled area, skipping..."
+            )
             continue
         avg_feature = masked_features.mean(axis=0)
 
@@ -239,10 +267,13 @@ def process_tile(
     if vis:
         plt.figure(figsize=(20, 20))
         plt.imshow(image1024)
-        show_anns(masks)
+        show_anns(filtered_masks)
         plt.axis("off")
         plt.savefig("out.png")
+        plt.close()
 
 
 if __name__ == "__main__":
-    main()
+    from fire import Fire
+
+    Fire(main)
