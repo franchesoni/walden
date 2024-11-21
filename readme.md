@@ -20,16 +20,19 @@ _now we can zip the out/ folder and transfer it elsewhere, as it's less than 2GB
 [x] extract overlapping tiles 
 - run SAM2 over them, saving the masks mostly inside a center crop
 [x] compute average dinov2reg feats for each mask, saving them along with the mask bounding box coordinates (absolute)
-- do some example annotations using qupath (e.g. points), import them
-- assign points to masks, run k-nn
-- return counts, visualize img + bbox with class
+[x] unsupervised learning using kmeans
+[x] understand import / export annotation qupath (export in geojson at file / export and import similarly), get classes from imported files, add points and save points as tsv
+[x] visualize cell classification in qupath (visualize img + bbox with class)
+[] do some example annotations using qupath (e.g. points), import them
+[] assign points to masks, run k-nn
+[] return counts
 
 
 ### Notes
-
 - zipping the images is not worth it
 
 ### Future
+- run 
 - do focus stacking
 - tune SAM2
 
