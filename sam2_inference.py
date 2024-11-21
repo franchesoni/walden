@@ -15,7 +15,7 @@ from sam2.utils.amg import build_all_layer_point_grids
 import csv
 
 
-def append_to_h5(new_data, feat_dim, filename="features.h5"):
+def append_to_h5(new_data, feat_dim, filename="out/cells/features.h5"):
     # Create or append to an HDF5 file
     with h5py.File(filename, "a") as f:
         if "dataset" not in f:
@@ -34,7 +34,7 @@ def append_to_h5(new_data, feat_dim, filename="features.h5"):
         dset[-1, :] = new_data
 
 
-def append_to_csv(global_bbox, filename="global_bboxes.csv"):
+def append_to_csv(global_bbox, filename="out/cells/global_bboxes.csv"):
     with open(filename, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(global_bbox)
@@ -90,7 +90,7 @@ def bbox_intersection(bbox1, bbox2):
     return (x_right - x_left) * (y_bottom - y_top)
 
 
-def main(sam_size="tiny", dino_size="small", vis=False, device="cuda"):
+def main(sam_size="tiny", dino_size="small", vis=False, device="cuda", reset=True):
     device = torch.device(device) if torch.cuda.is_available() else torch.device("cpu")
     img_transform = transforms.Compose(
         [
@@ -149,6 +149,10 @@ def main(sam_size="tiny", dino_size="small", vis=False, device="cuda"):
     center_bbox = [256, 256, 512, 512]  # [x_min, y_min, width, height]
 
     # generate sam masks
+    if reset and Path('out/cells').exists():
+        import shutil
+        shutil.rmtree('out/cells')
+    Path('out/cells').mkdir(exist_ok=True, parents=True)
     tiles = sorted(Path("overlapping_tiles").glob("tile_*.jpeg"))
     tile_row, tile_col = 0, 0
     for tile_path in tqdm.tqdm(tiles):
@@ -225,8 +229,8 @@ def process_tile(
         # Compute the average feature within the mask
         masked_features = features[seg_downsampled_bool]
         if masked_features.size == 0:
-            print('why is it zero?')
-            breakpoint()
+            print(f"mask at {mask['global_bbox']} has zero downsampled area, skipping...")
+            continue
         avg_feature = masked_features.mean(axis=0)
 
         append_to_h5(avg_feature, dino_dim)
