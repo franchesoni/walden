@@ -1,11 +1,13 @@
 import shutil
 from pathlib import Path
 import subprocess
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from fire import Fire
 import re
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFile
 import warnings
 
 # Increase the decompression bomb limit to handle large images
@@ -13,7 +15,8 @@ Image.MAX_IMAGE_PIXELS = None
 warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 
 
-def extract_largest_image_info(metadata_path="out/metadata.txt"):
+def extract_largest_image_info(metadata_path):
+    metadata_path = str(metadata_path)
     largest_width = 0
     largest_height = 0
     largest_series = None
@@ -44,18 +47,93 @@ def extract_largest_image_info(metadata_path="out/metadata.txt"):
     return largest_series, largest_width, largest_height, z_depths
 
 
-def run_showinf(imgpath, output_path="out/metadata.txt", bftools_path="bftools"):
+def run_showinf(imgpath, output_path, bftools_path="bftools"):
     command = [f"{bftools_path}/showinf", "-nopix", str(imgpath)]
 
     with open(output_path, "w") as outfile:
         subprocess.run(command, stdout=outfile, stderr=subprocess.STDOUT)
 
-    print("Saved metadata to out/metadata.txt")
+    print("Saved metadata to metadata.txt")
+
+
+
+def save_center_crop_parallel(
+    imgpath, series, width, height, z_depths, dstdir, bftools_path="bftools", max_workers=4
+):
+    """
+    Saves center-cropped images for each Z depth in parallel.
+
+    Parameters:
+    - imgpath (str or Path): Path to the source image.
+    - series (int): Series number for bfconvert.
+    - width (int): Width of the source image.
+    - height (int): Height of the source image.
+    - z_depths (int): Number of Z depths to process.
+    - dstdir (str or Path): Destination directory to save cropped images.
+    - bftools_path (str): Path to the bfconvert tool.
+    - max_workers (int): Maximum number of threads to use for parallel processing.
+    """
+    
+    # Calculate the center crop coordinates for a 4096x4096 region
+    crop_x = max(0, width // 2 - 4096 // 2)
+    crop_y = max(0, height // 2 - 4096 // 2)
+    crop_width = min(4096, width)
+    crop_height = min(4096, height)
+
+    # Ensure the destination directory exists
+    dstdir = Path(dstdir)
+    dstdir.mkdir(parents=True, exist_ok=True)
+
+    def process_z(z):
+        """
+        Processes a single Z depth by running the bfconvert command.
+
+        Parameters:
+        - z (int): The Z depth to process.
+
+        Returns:
+        - tuple: (z, output_path) if successful.
+        """
+        output_path = dstdir / f"img_center_crop_z{z}.tiff"
+        command = [
+            f"{bftools_path}/bfconvert",
+            "-series", str(series),
+            "-crop", f"{crop_x},{crop_y},{crop_width},{crop_height}",
+            "-z", str(z),
+            str(imgpath),
+            str(output_path),
+        ]
+        try:
+            subprocess.run(command, check=True)
+            return z, output_path
+        except subprocess.CalledProcessError as e:
+            print(f"Error processing Z depth {z}: {e}")
+            return z, None
+
+    # Use ThreadPoolExecutor to parallelize the processing of Z depths
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks to the executor
+        future_to_z = {executor.submit(process_z, z): z for z in range(z_depths)}
+        
+        # As each task completes, handle the result
+        for future in as_completed(future_to_z):
+            z = future_to_z[future]
+            try:
+                z_processed, output_path = future.result()
+                if output_path:
+                    print(f"Saved center crop for Z depth {z_processed} to {output_path}")
+                else:
+                    print(f"Failed to save center crop for Z depth {z_processed}")
+            except Exception as exc:
+                print(f"Z depth {z} generated an exception: {exc}")
+
 
 
 def save_center_crop(
-    imgpath, series, width, height, z_depths, dstdir, bftools_path="bftools"
+    imgpath, series, width, height, z_depths, dstdir, bftools_path="bftools", max_workers=None
 ):
+    if max_workers is not None:
+        return save_center_crop_parallel(imgpath, series, width, height, z_depths, dstdir, bftools_path="bftools", max_workers=max_workers)
     # Calculate the center crop coordinates for a 4096x4096 region
     crop_x = max(0, width // 2 - 4096 // 2)
     crop_y = max(0, height // 2 - 4096 // 2)
@@ -136,6 +214,94 @@ def save_full_image_crops(
                 # Remove the TIFF file
                 tiff_output_path.unlink()
                 print(f"Removed TIFF file: {tiff_output_path}")
+
+
+# Move the process_tile function to the top level so it can be pickled
+def process_tile(args):
+    z, i, j, imgpath, series, width, height, dstdir_str, bftools_path, max_tile_size = (
+        args
+    )
+
+    # Convert dstdir back to Path object
+    dstdir = Path(dstdir_str)
+
+    ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+    # Calculate crop coordinates
+    crop_x = i * max_tile_size
+    crop_y = j * max_tile_size
+    crop_width = min(max_tile_size, width - crop_x)
+    crop_height = min(max_tile_size, height - crop_y)
+
+    # Set output paths
+    tiff_output_path = dstdir / f"img_full_crop_z{z}_tile_{i}_{j}.tiff"
+    jpeg_output_path = dstdir / f"img_full_crop_z{z}_tile_{i}_{j}.jpeg"
+
+    # Run bfconvert to save TIFF tile
+    command = [
+        f"{bftools_path}/bfconvert",
+        "-series",
+        str(series),
+        "-crop",
+        f"{crop_x},{crop_y},{crop_width},{crop_height}",
+        "-z",
+        str(z),
+        str(imgpath),
+        str(tiff_output_path),
+    ]
+
+    subprocess.run(command, check=True)
+    print(f"Saved TIFF tile for Z depth {z}, tile ({i}, {j}) to {tiff_output_path}")
+
+    # Convert TIFF to JPEG using PIL and then remove the TIFF
+    try:
+        with Image.open(tiff_output_path) as img:
+            img.convert("RGB").save(jpeg_output_path, "JPEG")
+        print(
+            f"Converted TIFF to JPEG for Z depth {z}, tile ({i}, {j}) to {jpeg_output_path}"
+        )
+    except Image.DecompressionBombWarning as e:
+        print(f"Warning: {e} for image {tiff_output_path}")
+
+    # Remove the TIFF file
+    tiff_output_path.unlink()
+    print(f"Removed TIFF file: {tiff_output_path}")
+
+
+def save_full_image_crops_parallel(
+    imgpath, series, width, height, best_focuses, dstdir, bftools_path="bftools"
+):
+    # Define maximum tile size
+    max_tile_size = 2**14
+
+    # Calculate number of tiles in x and y direction
+    num_tiles_x = (width + max_tile_size - 1) // max_tile_size
+    num_tiles_y = (height + max_tile_size - 1) // max_tile_size
+
+    # Prepare list of tasks
+    tasks = []
+
+    for z in best_focuses:
+        for i in range(num_tiles_x):
+            for j in range(num_tiles_y):
+                tasks.append(
+                    (
+                        z,
+                        i,
+                        j,
+                        str(imgpath),
+                        series,
+                        width,
+                        height,
+                        str(dstdir),
+                        bftools_path,
+                        max_tile_size,
+                    )
+                )
+
+    # Use ProcessPoolExecutor to parallelize
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        list(executor.map(process_tile, tasks))
 
 
 def compute_sharpness(image_path):
@@ -231,39 +397,56 @@ def create_composite_image(best_focuses, width, height, dstdir, downscale_factor
     print(f"Saved composite image to {composite_output_path}")
 
 
-def vsi_to_jpegs(imgpath, n_focuses=1, reset=False):
+def vsi_to_jpegs(imgpath, dstname, n_focuses=1, reset=False, parallel=False):
     imgpath = Path(imgpath)
     assert imgpath.exists()
-    dstdir = Path("out")
+    dstdir = Path("out") / dstname
     if reset and dstdir.exists():
         shutil.rmtree(dstdir)
     dstdir.mkdir(exist_ok=True)
-    run_showinf(imgpath)  # extract metadata to file
+    run_showinf(imgpath, str(dstdir / "metadata.txt"))  # extract metadata to file
     largest_series, largest_width, largest_height, z_depths = (
-        extract_largest_image_info()
+        extract_largest_image_info(dstdir / "metadata.txt")
     )
     print(
         f"Largest Series: {largest_series}, Width: {largest_width}, Height: {largest_height}, Z Depths: {z_depths}"
     )
-    if reset or not Path("out/img_center_crop_z0.tiff").exists():
+    if reset or not (dstdir / "img_center_crop_z0.tiff").exists():
         save_center_crop(
-            imgpath, largest_series, largest_width, largest_height, z_depths, dstdir
+            imgpath, largest_series, largest_width, largest_height, z_depths, dstdir, max_workers=24 if parallel else None
         )  # extract center crop for all depths
     best_focuses = select_best_focus_images(
         dstdir, z_depths, n_focuses
     )  # find the best focus images
-    if reset or not len(list(Path("out").glob("img_full_crop_z*_tile_0_0.jpeg"))):
-        save_full_image_crops(
-            imgpath, largest_series, largest_width, largest_height, best_focuses, dstdir
-        )  # save full image crops for best focuses
-    if reset or not Path('out/composite_image.jpeg').exists():
+    if reset or not len(list(dstdir.glob("img_full_crop_z*_tile_0_0.jpeg"))):
+        if parallel:
+            save_full_image_crops_parallel(
+                imgpath,
+                largest_series,
+                largest_width,
+                largest_height,
+                best_focuses,
+                dstdir,
+            )
+        else:
+            save_full_image_crops(
+                imgpath,
+                largest_series,
+                largest_width,
+                largest_height,
+                best_focuses,
+                dstdir,
+            )  # save full image crops for best focuses
+    if reset or not (dstdir / "composite_image.jpeg").exists():
         create_composite_image(
-            best_focuses, largest_width, largest_height, dstdir, downscale_factor=16
+            best_focuses, largest_width, largest_height, dstdir, downscale_factor=32
         )  # create a composite lower resolution image
     # save metadata
     metadata_output_path = dstdir / "extracted_metadata.txt"
     with open(metadata_output_path, "w") as metadata_file:
-        metadata_file.write(f"Largest Series: {largest_series}\nWidth: {largest_width}\nHeight: {largest_height}\nZ Depths: {z_depths}\nBest focuses: {best_focuses}")
+        metadata_file.write(
+            f"Largest Series: {largest_series}\nWidth: {largest_width}\nHeight: {largest_height}\nZ Depths: {z_depths}\nBest focuses: {best_focuses}"
+        )
     print(f"Saved extracted metadata to {metadata_output_path}")
 
 
