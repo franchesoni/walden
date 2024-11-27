@@ -1,12 +1,15 @@
 
 ### Installation
 - clone the repo
-- download bftools (bioformats command line tools)
-- unzip it
-- put the folder inside the repo
+- download bftools (bioformats command line tools), from the repo: `wget https://downloads.openmicroscopy.org/bio-formats/8.0.1/artifacts/bftools.zip; unzip bftools.zip; rm bftools.zip`
 - download the necessary sam checkpoints 
 
 requires installing openjdk (e.g. using conda), ask chatgpt for help if needed
+
+### Usage
+run
+- `vsi_to_jpegs.py` to convert the vsi to big jpegs
+- `jpegs_to_overlapping_tiles.py` to convert the big jpegs to smaller, overlapping jpegs
 
 ### Data processing pipeline
 [x] receive image path
@@ -23,9 +26,11 @@ _now we can zip the out/ folder and transfer it elsewhere, as it's less than 2GB
 [x] unsupervised learning using kmeans
 [x] understand import / export annotation qupath (export in geojson at file / export and import similarly), get classes from imported files, add points and save points as tsv
 [x] visualize cell classification in qupath (visualize img + bbox with class)
-[] do some example annotations using qupath (e.g. points), import them
-[] assign points to masks, run k-nn
-[] return counts
+[x] do some example annotations using qupath (e.g. points), import them
+[] parallelize
+[] extract all bboxes and cells
+[] load the supervision and run knn to order the bboxes
+[] create an util to display and annotate the sequence of neighbors
 
 
 ### Notes
