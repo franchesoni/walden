@@ -7,12 +7,12 @@ import cv2
 from PIL import Image
 import os
 import matplotlib.pyplot as plt
-import sys
 import h5py
 from sam2.build_sam import build_sam2
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 from sam2.utils.amg import build_all_layer_point_grids
 import csv
+import shutil
 
 
 def sort_paths_by_dimensions(paths):
@@ -27,7 +27,7 @@ def sort_paths_by_dimensions(paths):
     """
 
     def extract_dimensions(path):
-        # Extract the part after "tile_" and before ".jpeg"
+        # Extract dimensions from filename
         filename = path.stem  # Get the file name without extension
         if filename.startswith("tile_"):
             dims = filename[len("tile_") :].split("_")
@@ -38,7 +38,7 @@ def sort_paths_by_dimensions(paths):
     return sorted(paths, key=extract_dimensions)
 
 
-def append_to_h5(new_data, feat_dim, filename="out/cells/features.h5"):
+def append_to_h5(new_data, feat_dim, filename):
     # Create or append to an HDF5 file
     with h5py.File(filename, "a") as f:
         if "dataset" not in f:
@@ -57,7 +57,7 @@ def append_to_h5(new_data, feat_dim, filename="out/cells/features.h5"):
         dset[-1, :] = new_data
 
 
-def append_to_csv(global_bbox, filename="out/cells/global_bboxes.csv"):
+def append_to_csv(global_bbox, filename):
     with open(filename, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(global_bbox)
@@ -113,8 +113,18 @@ def bbox_intersection(bbox1, bbox2):
     return (x_right - x_left) * (y_bottom - y_top)
 
 
-def main(sam_size="tiny", dino_size="small", vis=False, device="cuda", reset=True):
-    device = torch.device(device) if torch.cuda.is_available() else torch.device("cpu")
+def main(
+    srcdir,
+    sam_size="tiny",
+    dino_size="small",
+    vis=False,
+    reset=False,
+    n=0,
+    N=1,
+    device="cuda",
+):
+    # Initialize the model once on the GPU
+    device = torch.device(device if torch.cuda.is_available() else "cpu")
     img_transform = transforms.Compose(
         [
             transforms.ToTensor(),
@@ -150,8 +160,8 @@ def main(sam_size="tiny", dino_size="small", vis=False, device="cuda", reset=Tru
     model = build_sam2(
         model_cfg, sam2_checkpoint, device=device, apply_postprocessing=False
     )
+    model.eval()
 
-    print("generating masks...")
     point_grids = build_all_layer_point_grids(
         n_per_side=32, n_layers=0, scale_per_layer=1
     )
@@ -168,24 +178,41 @@ def main(sam_size="tiny", dino_size="small", vis=False, device="cuda", reset=Tru
         min_mask_region_area=14,  # 14x14
     )
 
-    # filter masks mostly outside
     center_bbox = [256, 256, 512, 512]  # [x_min, y_min, width, height]
+    srcdir = Path(srcdir)
+    dstdir = srcdir / "masks"
+    if reset and dstdir.exists():
+        shutil.rmtree(dstdir)
+    dstdir.mkdir(exist_ok=True, parents=True)
 
-    # generate sam masks
-    if reset and Path("out/cells").exists():
-        import shutil
-
-        shutil.rmtree("out/cells")
-    Path("out/cells").mkdir(exist_ok=True, parents=True)
+    # Get sorted list of tiles
     tiles = sort_paths_by_dimensions(
-        list(Path("overlapping_tiles").glob("tile_*.jpeg"))
+        list((srcdir / "overlapping_tiles").glob("tile_*.jpeg"))
     )
-    tile_row, tile_col = 0, 0
-    for tile_path in tqdm.tqdm(tiles):
+    tiles_with_indices = []
+    for idx, tile_path in enumerate(tiles):
         tile_row, tile_col = int(tile_path.name.split("_")[1]), int(
             tile_path.name.split("_")[2].split(".")[0]
         )
+        tiles_with_indices.append((idx, (tile_row, tile_col)))
+
+    # Divide tiles into N parts and select the n-th part
+    total_tiles = len(tiles_with_indices)
+    tiles_per_chunk = total_tiles // N
+    start_idx = n * tiles_per_chunk
+    end_idx = (n + 1) * tiles_per_chunk if n < N - 1 else total_tiles
+    tiles_to_process = tiles_with_indices[start_idx:end_idx]
+
+    # Process tiles sequentially
+    for idx, (tile_row, tile_col) in tqdm.tqdm(
+        tiles_to_process,
+        total=len(tiles_to_process),
+        desc="Processing tiles",
+        unit="tile",
+    ):
         process_tile(
+            srcdir,
+            dstdir,
             tile_row,
             tile_col,
             mask_generator,
@@ -199,6 +226,8 @@ def main(sam_size="tiny", dino_size="small", vis=False, device="cuda", reset=Tru
 
 
 def process_tile(
+    srcdir,
+    dstdir,
     tile_row,
     tile_col,
     mask_generator,
@@ -209,8 +238,10 @@ def process_tile(
     dino_dim,
     vis,
 ):
-    image1024 = Image.open(f"overlapping_tiles/tile_{tile_row}_{tile_col}.jpeg")
-    masks = mask_generator.generate(np.array(image1024))
+    image_path = srcdir / f"overlapping_tiles/tile_{tile_row}_{tile_col}.jpeg"
+    img1024 = Image.open(image_path)
+    # Generate masks
+    masks = mask_generator.generate(np.array(img1024))
 
     # filter out those outside the center crop
     filtered_masks = []
@@ -218,22 +249,18 @@ def process_tile(
         bbox = mask["bbox"]
         intersection = bbox_intersection(bbox, center_bbox)
         if intersection >= 0.5 * bbox_area(bbox):
+            x_min, y_min, width, height = bbox
+            mask["global_bbox"] = [
+                tile_row + y_min,
+                tile_col + x_min,
+                height,
+                width,
+            ]
             filtered_masks.append(mask)
 
-    # compute global bbox
-    for mask in filtered_masks:
-        x_min, y_min, width, height = mask["bbox"]
-        mask["global_bbox"] = [
-            tile_row + y_min,
-            tile_col + x_min,
-            height,
-            width,
-        ]  # [row, col, height, width]
-
-    # forward dino over center crop of size 644
-    image644 = image1024.crop((190, 190, 834, 834))
+    img644 = img1024.crop((190, 190, 834, 834))
     with torch.no_grad():
-        input_img = img_transform(image644).reshape(1, 3, 644, 644).to(device)
+        input_img = img_transform(img644).reshape(1, 3, 644, 644).to(device)
         feats = dino.forward_features(input_img)["x_norm_patchtokens"].reshape(
             1, 46, 46, dino_dim
         )
@@ -261,12 +288,12 @@ def process_tile(
             continue
         avg_feature = masked_features.mean(axis=0)
 
-        append_to_h5(avg_feature, dino_dim)
-        append_to_csv(mask["global_bbox"])
+        append_to_h5(avg_feature, dino_dim, dstdir / "features.h5")
+        append_to_csv(mask["global_bbox"], dstdir / "global_bboxes.txt")
 
     if vis:
         plt.figure(figsize=(20, 20))
-        plt.imshow(image1024)
+        plt.imshow(img1024)
         show_anns(filtered_masks)
         plt.axis("off")
         plt.savefig("out.png")
@@ -274,6 +301,6 @@ def process_tile(
 
 
 if __name__ == "__main__":
-    from fire import Fire
+    import fire
 
-    Fire(main)
+    fire.Fire(main)
