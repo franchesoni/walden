@@ -1,3 +1,4 @@
+import os
 import shutil
 from pathlib import Path
 import subprocess
@@ -269,7 +270,7 @@ def process_tile(args):
 
 
 def save_full_image_crops_parallel(
-    imgpath, series, width, height, best_focuses, dstdir, bftools_path="bftools"
+    imgpath, series, width, height, best_focuses, dstdir, bftools_path="bftools", max_workers=8
 ):
     # Define maximum tile size
     max_tile_size = 2**14
@@ -300,7 +301,8 @@ def save_full_image_crops_parallel(
                 )
 
     # Use ProcessPoolExecutor to parallelize
-    with concurrent.futures.ProcessPoolExecutor() as executor:
+    # max workers is restricted by the ram consumed by each process
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         list(executor.map(process_tile, tasks))
 
 
@@ -397,7 +399,7 @@ def create_composite_image(best_focuses, width, height, dstdir, downscale_factor
     print(f"Saved composite image to {composite_output_path}")
 
 
-def vsi_to_jpegs(imgpath, dstname, n_focuses=1, reset=False, parallel=False):
+def vsi_to_jpegs(imgpath, dstname, n_focuses=1, reset=False, workers=0):
     imgpath = Path(imgpath)
     assert imgpath.exists()
     dstdir = Path("out") / dstname
@@ -413,13 +415,13 @@ def vsi_to_jpegs(imgpath, dstname, n_focuses=1, reset=False, parallel=False):
     )
     if reset or not (dstdir / "img_center_crop_z0.tiff").exists():
         save_center_crop(
-            imgpath, largest_series, largest_width, largest_height, z_depths, dstdir, max_workers=24 if parallel else None
+            imgpath, largest_series, largest_width, largest_height, z_depths, dstdir, max_workers=24 if workers else None
         )  # extract center crop for all depths
     best_focuses = select_best_focus_images(
         dstdir, z_depths, n_focuses
     )  # find the best focus images
     if reset or not len(list(dstdir.glob("img_full_crop_z*_tile_0_0.jpeg"))):
-        if parallel:
+        if workers:
             save_full_image_crops_parallel(
                 imgpath,
                 largest_series,
@@ -427,6 +429,7 @@ def vsi_to_jpegs(imgpath, dstname, n_focuses=1, reset=False, parallel=False):
                 largest_height,
                 best_focuses,
                 dstdir,
+                max_workers=workers,
             )
         else:
             save_full_image_crops(
