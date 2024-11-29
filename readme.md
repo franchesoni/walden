@@ -9,8 +9,8 @@ requires installing openjdk (e.g. using conda), ask chatgpt for help if needed
 
 ### Usage
 run
-- `vsi_to_jpegs.py` to convert the vsi to big jpegs
-- `jpegs_to_overlapping_tiles.py` to convert the big jpegs to smaller, overlapping jpegs
+- `vsi_to_jpegs.py` to convert the vsi to big jpegs, do it for every vsi
+- `jpegs_to_overlapping_tiles.py` (or `get_dataset.sh`) to convert the big jpegs to smaller jpegs
 
 ### Data processing pipeline
 [x] receive image path
