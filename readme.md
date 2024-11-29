@@ -43,3 +43,13 @@ _now we can zip the out/ folder and transfer it elsewhere, as it's less than 2GB
 - tune SAM2
 
 
+# running...
+quyet tmux 1
+img1 
+weird tmux 0
+img2
+quyet tmux 2
+img5 
+weird tmux 1
+img3
+
