@@ -1,3 +1,4 @@
+print("importing")
 import tqdm
 from pathlib import Path
 import torch
@@ -115,6 +116,7 @@ def bbox_intersection(bbox1, bbox2):
 
 def main(
     srcdir,
+    dstdir,
     sam_size="tiny",
     dino_size="small",
     vis=False,
@@ -123,6 +125,7 @@ def main(
     N=1,
     device="cuda",
 ):
+    print("initializing dino")
     # Initialize the model once on the GPU
     device = torch.device(device if torch.cuda.is_available() else "cpu")
     img_transform = transforms.Compose(
@@ -141,6 +144,7 @@ def main(
         raise ValueError(f"{dino_size} not recognized, should be in ['small']")
     dino.eval()
 
+    print("initializing sam")
     if sam_size == "tiny":
         sam2_checkpoint = "checkpoints/sam2.1_hiera_tiny.pt"
         model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
@@ -178,33 +182,40 @@ def main(
         min_mask_region_area=14,  # 14x14
     )
 
+    print("initializing utils")
     center_bbox = [256, 256, 512, 512]  # [x_min, y_min, width, height]
     srcdir = Path(srcdir)
-    dstdir = srcdir / "masks"
+    dstdir = Path(dstdir)
     if reset and dstdir.exists():
         shutil.rmtree(dstdir)
     dstdir.mkdir(exist_ok=True, parents=True)
 
     # Get sorted list of tiles
-    tiles = sort_paths_by_dimensions(
-        list((srcdir / "overlapping_tiles").glob("tile_*.jpeg"))
+    tiles = sort_paths_by_dimensions(list((srcdir / "tiles").glob("tile_*.jpeg")))
+
+    tile_rows = sorted(set(int(tile_path.name.split("_")[1]) for tile_path in tiles))
+    tile_cols = sorted(
+        set(int(tile_path.name.split("_")[2].split(".")[0]) for tile_path in tiles)
     )
-    tiles_with_indices = []
-    for idx, tile_path in enumerate(tiles):
-        tile_row, tile_col = int(tile_path.name.split("_")[1]), int(
-            tile_path.name.split("_")[2].split(".")[0]
-        )
-        tiles_with_indices.append((idx, (tile_row, tile_col)))
+
+    # Generate positions for the top-left tile of each 1024x1024 image with stride of 2 tiles (512 pixels)
+    big_tile_coords = []
+    for tile_row_ind in range(
+        0, len(tile_rows) - 2, 2
+    ):  # Subtract 2 to prevent going out of bounds
+        for tile_col_ind in range(0, len(tile_cols) - 2, 2):
+            big_tile_coords.append((tile_rows[tile_row_ind], tile_cols[tile_col_ind]))
 
     # Divide tiles into N parts and select the n-th part
-    total_tiles = len(tiles_with_indices)
+    total_tiles = len(big_tile_coords)
     tiles_per_chunk = total_tiles // N
     start_idx = n * tiles_per_chunk
     end_idx = (n + 1) * tiles_per_chunk if n < N - 1 else total_tiles
-    tiles_to_process = tiles_with_indices[start_idx:end_idx]
+    tiles_to_process = big_tile_coords[start_idx:end_idx]
 
+    print("processing tiles")
     # Process tiles sequentially
-    for idx, (tile_row, tile_col) in tqdm.tqdm(
+    for tile_row, tile_col in tqdm.tqdm(
         tiles_to_process,
         total=len(tiles_to_process),
         desc="Processing tiles",
@@ -225,6 +236,31 @@ def main(
         )
 
 
+def load_1024(srcdir, tile_row, tile_col):
+    # image_path = srcdir / f"overlapping_tiles/tile_{tile_row}_{tile_col}.jpeg"
+    # img1024 = Image.open(image_path)
+
+    # Initialize an empty 1024x1024 image
+    img1024 = Image.new("RGB", (1024, 1024))
+
+    # Loop to assemble the 4x4 grid of tiles
+    for i in range(4):
+        for j in range(4):
+            r = tile_row + i * 256
+            c = tile_col + j * 256
+            image_path = srcdir / f"tiles/tile_{r}_{c}.jpeg"
+            if not image_path.exists():
+                print(f"Tile {r}_{c} does not exist, skipping...")
+                continue
+            img_tile = Image.open(image_path)
+            if img_tile.size != (256, 256):
+                print(f"Tile {r}_{c} is not 256x256, skipping...")
+                continue
+            img1024.paste(img_tile, (j * 256, i * 256))
+
+    return img1024, tile_row, tile_col
+
+
 def process_tile(
     srcdir,
     dstdir,
@@ -238,8 +274,8 @@ def process_tile(
     dino_dim,
     vis,
 ):
-    image_path = srcdir / f"overlapping_tiles/tile_{tile_row}_{tile_col}.jpeg"
-    img1024 = Image.open(image_path)
+    img1024, global_row, global_col = load_1024(srcdir, tile_row, tile_col)
+
     # Generate masks
     masks = mask_generator.generate(np.array(img1024))
 
@@ -251,8 +287,8 @@ def process_tile(
         if intersection >= 0.5 * bbox_area(bbox):
             x_min, y_min, width, height = bbox
             mask["global_bbox"] = [
-                tile_row + y_min,
-                tile_col + x_min,
+                global_row + y_min,
+                global_col + x_min,
                 height,
                 width,
             ]
