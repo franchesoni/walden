@@ -31,3 +31,4 @@ cp -r out/img6/tiles dataset/img6/tiles
 cp out/img6/composite_image.jpeg out/img6/extracted_metadata.txt dataset/img6/
 
 tar -cf slides_dataset.tar dataset/
+rm -rf dataset/
