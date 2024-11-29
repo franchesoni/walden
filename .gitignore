@@ -169,3 +169,4 @@ out/
 checkpoints/
 slides_dataset/
 slides_dataset.tar
+dataset/
