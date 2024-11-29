@@ -2,6 +2,7 @@
 ### Installation
 - clone the repo
 - download bftools (bioformats command line tools), from the repo: `wget https://downloads.openmicroscopy.org/bio-formats/8.0.1/artifacts/bftools.zip; unzip bftools.zip; rm bftools.zip`
+- modify the ram available in `bftools/config.sh`
 - download the necessary sam checkpoints 
 
 requires installing openjdk (e.g. using conda), ask chatgpt for help if needed
@@ -27,7 +28,7 @@ _now we can zip the out/ folder and transfer it elsewhere, as it's less than 2GB
 [x] understand import / export annotation qupath (export in geojson at file / export and import similarly), get classes from imported files, add points and save points as tsv
 [x] visualize cell classification in qupath (visualize img + bbox with class)
 [x] do some example annotations using qupath (e.g. points), import them
-[] parallelize
+[x] parallelize <- somewhat, sam2 inference is hard to parallelize
 [] extract all bboxes and cells
 [] load the supervision and run knn to order the bboxes
 [] create an util to display and annotate the sequence of neighbors
