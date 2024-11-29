@@ -163,8 +163,9 @@ cython_debug/
 
 bftools/
 out/
-overlapping_tiles/
 *.tiff
 *.jpeg
 *.zip
 checkpoints/
+slides_dataset/
+slides_dataset.tar
