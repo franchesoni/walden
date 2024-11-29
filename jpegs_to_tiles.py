@@ -118,9 +118,15 @@ def process_big_tile(args):
         print(f"Finished processing big tile {big_tile_name}.")
 
 
-def main(srcdir, reset=False, parallel=False):
+def main(
+    srcdir,
+    reset=False,
+    parallel=False,
+    small_tile_size=1024,  # Size of the small tiles
+    small_tile_step=512,  # Step size for overlapping tiles
+):
     srcdir = Path(srcdir)
-    dstdir = srcdir / "overlapping_tiles"
+    dstdir = srcdir / "tiles"
     if dstdir.exists() and reset:
         shutil.rmtree(dstdir)
     dstdir.mkdir(exist_ok=True)
@@ -134,8 +140,6 @@ def main(srcdir, reset=False, parallel=False):
     print("Height:", height, "Width:", width)
 
     big_tile_size = 16384  # Size of the big tiles (2**14)
-    small_tile_size = 1024  # Size of the small tiles
-    small_tile_step = 512  # Step size for overlapping tiles
 
     # Precompute the list of small tile starting positions
     small_tile_col0_list = list(range(0, width - small_tile_size + 1, small_tile_step))
