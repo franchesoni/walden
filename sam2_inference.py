@@ -128,6 +128,8 @@ def main(
     print("initializing dino")
     # Initialize the model once on the GPU
     device = torch.device(device if torch.cuda.is_available() else "cpu")
+    torch.cuda.set_device(device)
+
     img_transform = transforms.Compose(
         [
             transforms.ToTensor(),
