@@ -36,6 +36,7 @@ _now we can zip the out/ folder and transfer it elsewhere, as it's less than 2GB
 
 ### Notes
 - zipping the images is not worth it
+- in the composite image, in qupath, and in the patches we saved, there are some tiling effects visible
 
 ### Future
 - run 
@@ -55,4 +56,5 @@ img3
 # running...
 quyet tmux 3
 img6 
+
 
