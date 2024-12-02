@@ -11,7 +11,7 @@ def bounding_boxes_to_geojson(
     classes,
     class_map=None,
     plane_info={"c": -1, "z": 0, "t": 0},
-    output_file="out/cells/predictions.geojson",
+    output_file="predictions.geojson",
 ):
     """
     Convert bounding boxes and classes to a list of individual GeoJSON features.
@@ -81,26 +81,46 @@ def load_bounding_boxes_csv(csv_file):
 def main(n_clusters=10):
     # Example usage with feature clustering
     # Mapping class IDs to classification names (optional)
-    colors = [color.tolist() for color in np.random.choice(range(256), size=(n_clusters, 3), replace=False)]
-    class_map = {i : {"name": f"Cluster {i}", "color": colors[i]} for i in range(n_clusters)}
+    colors = [
+        color.tolist()
+        for color in np.random.choice(range(256), size=(n_clusters, 3), replace=False)
+    ]
+    class_map = {
+        i: {"name": f"Cluster {i}", "color": colors[i]} for i in range(n_clusters)
+    }
 
-    csv_file = "out/cells/global_bboxes.csv"  
+    csv_file = "out/img5/masks/global_bboxes.txt"
     bboxes = load_bounding_boxes_csv(csv_file)
 
-    with h5py.File("out/cells/features.h5", 'r') as f:
-        data = f['dataset'][:]
+    with h5py.File("out/img5/masks/features.h5", "r") as f:
+        data = f["dataset"][:]
 
     from sklearn.cluster import KMeans
+
     kmeans = KMeans(n_clusters=10, random_state=0)
     classes = kmeans.fit_predict(data).tolist()
     length = min(len(bboxes), len(classes))
     bboxes, classes = bboxes[:length], classes[:length]
 
-    chosen_z = int(list(Path('out').glob("img_full_crop_z*_tile_0_0.jpeg"))[0].stem.split("z")[1].split("_")[0]) + 1
+    # Read the metadata and extract the "Best focuses" value
+    file_path = "dataset/img5/extracted_metadata.txt"
+    with open(file_path, "r") as file:
+        for line in file:
+            if "Best focuses:" in line:
+                # Extract the part after "Best focuses:" and parse it as a list
+                best_focus = line.split("Best focuses:")[-1].strip()
+                best_focus = eval(best_focus)  # Safely parse the list
+                best_focus = best_focus[0]  # Take the first value
+                break
+    chosen_z = best_focus + 1
+
     bounding_boxes_to_geojson(
-        bboxes, classes, class_map=class_map, plane_info={"c": -1, "z": chosen_z, "t": 0}
+        bboxes,
+        classes,
+        class_map=class_map,
+        plane_info={"c": -1, "z": chosen_z, "t": 0},
     )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
