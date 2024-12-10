@@ -6,6 +6,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 from sklearn.linear_model import SGDClassifier
+from sklearn.preprocessing import StandardScaler
+
 from starlette.applications import Starlette
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
@@ -217,7 +219,8 @@ class DataManager:
 
 class IncrementalModel:
     def __init__(self, n_features):
-        self.clf = SGDClassifier(loss="log_loss", warm_start=True)
+        self.clf = SGDClassifier(loss="log_loss", warm_start=True, class_weight="balanced")
+        self.scaler = StandardScaler()
         self._initialized = False
         self.n_features = n_features
 
@@ -225,15 +228,19 @@ class IncrementalModel:
         X = np.atleast_2d(X)
         y = np.asarray(y)
         if not self._initialized:
+            X = self.scaler.fit_transform(X)
             self.clf.partial_fit(X, y, classes=[0, 1])
             self._initialized = True
         else:
+            self.scaler = self.scaler.partial_fit(X)
+            X = self.scaler.transform(X)
             self.clf.partial_fit(X, y)
+        self.debug_probabilities(X)
 
     def predict_proba(self, X):
         if not self._initialized:
-            # If model not initialized, return uniform probability
             return np.ones((len(X), 2)) * 0.5
+        X = self.scaler.transform(X)
         scores = self.clf.decision_function(X)
         probs = 1.0 / (1.0 + np.exp(-scores))
         return np.vstack([1 - probs, probs]).T
@@ -242,6 +249,11 @@ class IncrementalModel:
         # Reset model
         self.clf = SGDClassifier(loss="log_loss", warm_start=True)
         self._initialized = False
+
+    def debug_probabilities(self, X):
+        X_scaled = self.scaler.transform(X)
+        probs = self.clf.predict_proba(X_scaled)
+        print("Probabilities range:", np.min(probs[:, 1]), "-", np.max(probs[:, 1]))
 
 
 class Orchestrator:
@@ -253,6 +265,7 @@ class Orchestrator:
 
         self.current_sample = None
         self.candidates = []
+        self.previous_samples = []  # Stack for backtracking
         self.batch_size = 10000
 
         self.warmup_samples = 100
@@ -311,6 +324,9 @@ class Orchestrator:
         self.data_mgr.mark_labeled(idx)
         self.annotations.append((idx, label))
 
+        # Push current sample onto the previous_samples stack
+        self.previous_samples.append(self.current_sample)
+
         # Move on to next sample
         self._pick_next_sample()
 
@@ -362,20 +378,24 @@ class Orchestrator:
             heapq.heappush(self.candidates, (u, idx))
 
     def revert_last_annotation(self):
-        if not self.annotations:
+        if not self.annotations or not self.previous_samples:
             return
-        # Pop last annotation
+
+        # Pop last annotation and previous sample
         idx, label = self.annotations.pop()
-        # Remove from annotation file: rewrite file
+        self.current_sample = self.previous_samples.pop()
+
+        # Remove annotation from file: rewrite file
         with open(self.annotation_file, "w", newline="") as f:
             writer = csv.writer(f)
             for aidx, albl in self.annotations:
                 writer.writerow([aidx, albl])
+
+        # Unmark the last labeled sample
+        self.data_mgr.unmark_labeled(idx)
+
         # Retrain model from scratch
         self.retrain(self.annotations)
-        # If current_sample was chosen after that annotation, re-choose current sample
-        # Actually retrain() resets state and we re-choose next sample sets, so current_sample remains valid.
-        # Just ensure we are consistent. We'll leave current_sample as is. If user wants to revert multiple times, they can.
 
     def get_probability_for(self, idx):
         # Return model probability for a single sample
@@ -386,6 +406,7 @@ class Orchestrator:
 
 app_root = Path("")
 orchestrator = Orchestrator(root_dir=app_root, annotation_file=Path("annotations.csv"))
+
 
 
 async def homepage(request):
