@@ -219,7 +219,9 @@ class DataManager:
 
 class IncrementalModel:
     def __init__(self, n_features):
-        self.clf = SGDClassifier(loss="log_loss", warm_start=True, class_weight="balanced")
+        self.clf = SGDClassifier(
+            loss="log_loss", warm_start=True, class_weight="balanced"
+        )
         self.scaler = StandardScaler()
         self._initialized = False
         self.n_features = n_features
@@ -267,6 +269,9 @@ class Orchestrator:
         self.candidates = []
         self.previous_samples = []  # Stack for backtracking
         self.batch_size = 10000
+
+        self.positive_count = 0  # Counter for positive annotations
+        self.negative_count = 0  # Counter for negative annotations
 
         self.warmup_samples = 100
         self.warmup_idx = np.random.choice(
@@ -317,6 +322,12 @@ class Orchestrator:
         with open(self.annotation_file, "a", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([idx, label])
+
+        # Update counters
+        if label == 1:
+            self.positive_count += 1
+        elif label == 0:
+            self.negative_count += 1
 
         # Update model
         X = self.data_mgr.get_features(idx)
@@ -408,7 +419,6 @@ app_root = Path("")
 orchestrator = Orchestrator(root_dir=app_root, annotation_file=Path("annotations.csv"))
 
 
-
 async def homepage(request):
     idx = orchestrator.get_current_sample_index()
     if idx is None:
@@ -425,6 +435,13 @@ async def homepage(request):
     # Probability
     prob = orchestrator.get_probability_for(idx)
     prob_html = f"<p>Predicted Probability (Positive): {prob:.3f}</p>"
+
+    # Annotation Counters
+    positive_count = orchestrator.positive_count
+    negative_count = orchestrator.negative_count
+    counter_html = f"""
+    <p>Annotations: Positive = {positive_count}, Negative = {negative_count}</p>
+    """
 
     # Prefetch next image if available
     next_idx = orchestrator.get_next_sample_index()
@@ -454,6 +471,7 @@ async def homepage(request):
     <body>
     <h1>Sample {idx}</h1>
     {prob_html}
+    {counter_html}
     <img src="{img_base64}" width="512" height="512" />
     {prefetch_img_html}
     <form method="POST" action="/label" id="labelForm">
