@@ -266,12 +266,12 @@ class Orchestrator:
         self.current_sample = None
         self.candidates = []
         self.previous_samples = []  # Stack for backtracking
-        self.batch_size = 10000
+        self.batch_size = 10
 
         self.positive_count = 0  # Counter for positive annotations
         self.negative_count = 0  # Counter for negative annotations
 
-        self.warmup_samples = 100
+        self.warmup_samples = 10
         self.warmup_idx = np.random.choice(
             self.data_mgr.N, self.warmup_samples, replace=False
         ).tolist()
@@ -381,9 +381,9 @@ class Orchestrator:
         )
         X = np.array([self.data_mgr.get_features(i) for i in batch])
         probs = self.model.predict_proba(X)
-        # uncertainty = distance from 0.5
-        uncertainty = np.abs(probs[:, 1] - 0.5)
-        for u, idx in zip(uncertainty, batch):
+        # certainty = distance from 0.5
+        certainty = np.abs(probs[:, 1] - 0.5)
+        for u, idx in zip(certainty, batch):
             heapq.heappush(self.candidates, (u, idx))
 
     def revert_last_annotation(self):
