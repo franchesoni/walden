@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 from sklearn.linear_model import SGDClassifier
 from starlette.applications import Starlette
-from starlette.responses import HTMLResponse
+from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 
@@ -54,7 +54,7 @@ class DataManager:
         img = self._load_image_with_bbox(bbox, center_crop=center_crop)
         return img
 
-    def _load_image_with_bbox(self, bbox, center_crop=False, root=""):
+    def _load_image_with_bbox(self, bbox, center_crop=False):
         """
         Load a 3x3 composite of tiles around the given bounding box and optionally
         return a 512x512 crop centered on the bounding box.
@@ -80,7 +80,7 @@ class DataManager:
 
         # Directory with tiles
         imgname = f"img{imgnumber}"
-        tiles_dir = Path(root) / f"dataset/{imgname}/tiles"
+        tiles_dir = Path(self.root) / f"dataset/{imgname}/tiles"
 
         # Determine the tile grid start
         # We find the tile that contains the top-left corner of the bbox
@@ -200,12 +200,16 @@ class DataManager:
 
             return cropped_image
         else:
-            # Return the full 3x3 composite
             return composite_image
 
     def mark_labeled(self, idx):
         self.labeled_indices.add(idx)
         self.unlabeled_indices.remove(idx)
+
+    def unmark_labeled(self, idx):
+        # Used during revert
+        self.labeled_indices.discard(idx)
+        self.unlabeled_indices.add(idx)
 
     def get_unlabeled_indices(self):
         return list(self.unlabeled_indices)
@@ -227,9 +231,17 @@ class IncrementalModel:
             self.clf.partial_fit(X, y)
 
     def predict_proba(self, X):
+        if not self._initialized:
+            # If model not initialized, return uniform probability
+            return np.ones((len(X), 2)) * 0.5
         scores = self.clf.decision_function(X)
         probs = 1.0 / (1.0 + np.exp(-scores))
         return np.vstack([1 - probs, probs]).T
+
+    def reset(self):
+        # Reset model
+        self.clf = SGDClassifier(loss="log_loss", warm_start=True)
+        self._initialized = False
 
 
 class Orchestrator:
@@ -237,6 +249,8 @@ class Orchestrator:
         self.data_mgr = DataManager(root_dir)
         self.model = IncrementalModel(n_features=self.data_mgr.feats.shape[1])
         self.annotation_file = annotation_file
+        self.annotations = []  # store (idx, label)
+
         self.current_sample = None
         self.candidates = []
         self.batch_size = 10000
@@ -246,19 +260,61 @@ class Orchestrator:
             self.data_mgr.N, self.warmup_samples, replace=False
         ).tolist()
         self.current_sample = self.warmup_idx.pop() if self.warmup_idx else None
+        self.next_sample = None  # For prefetching
+
+        # If annotation file exists, load it and retrain to restore state
+        if self.annotation_file.exists():
+            self._load_annotations_and_retrain()
+
+        self._ensure_next_sample()
+
+    def _load_annotations_and_retrain(self):
+        # Load existing annotations from file
+        loaded_annotations = []
+        with open(self.annotation_file, "r") as f:
+            reader = csv.reader(f)
+            for row in reader:
+                idx, label = int(row[0]), int(row[1])
+                loaded_annotations.append((idx, label))
+        # Retrain model
+        self.retrain(loaded_annotations)
+
+    def retrain(self, annotations):
+        # Reset model and data sets
+        self.model.reset()
+        self.data_mgr.labeled_indices.clear()
+        self.data_mgr.unlabeled_indices = set(range(self.data_mgr.N))
+        for idx, label in annotations:
+            X = self.data_mgr.get_features(idx)
+            self.model.partial_fit(X[np.newaxis, :], [label])
+            self.data_mgr.mark_labeled(idx)
+        self.annotations = annotations.copy()
+        # Clear candidates so they are re-generated on next request
+        self.candidates.clear()
 
     def get_current_sample_index(self):
         return self.current_sample
 
+    def get_next_sample_index(self):
+        # Return next sample for prefetching if available
+        return self.next_sample
+
     def handle_annotation(self, idx, label):
+        # Save annotation
         with open(self.annotation_file, "a", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([idx, label])
 
+        # Update model
         X = self.data_mgr.get_features(idx)
         self.model.partial_fit(X[np.newaxis, :], [label])
         self.data_mgr.mark_labeled(idx)
+        self.annotations.append((idx, label))
 
+        # Move on to next sample
+        self._pick_next_sample()
+
+    def _pick_next_sample(self):
         if self.warmup_idx:
             self.current_sample = self.warmup_idx.pop()
         else:
@@ -266,6 +322,30 @@ class Orchestrator:
                 self.refill_candidates()
             if self.candidates:
                 _, self.current_sample = heapq.heappop(self.candidates)
+            else:
+                self.current_sample = None
+
+        self._ensure_next_sample()
+
+    def _ensure_next_sample(self):
+        # Prefetch next sample from candidates if available
+        if self.warmup_idx:
+            # Next sample is known
+            if self.warmup_idx:
+                self.next_sample = (
+                    self.warmup_idx[-1] if len(self.warmup_idx) > 0 else None
+                )
+            else:
+                self.next_sample = None
+        else:
+            # If we have candidates, look at the next one in the heap
+            if len(self.candidates) < 2:
+                self.refill_candidates()
+            if len(self.candidates) > 0:
+                # Peek next candidate without popping it
+                self.next_sample = self.candidates[0][1]
+            else:
+                self.next_sample = None
 
     def refill_candidates(self):
         unlabeled = self.data_mgr.get_unlabeled_indices()
@@ -276,9 +356,32 @@ class Orchestrator:
         )
         X = np.array([self.data_mgr.get_features(i) for i in batch])
         probs = self.model.predict_proba(X)
+        # uncertainty = distance from 0.5
         uncertainty = np.abs(probs[:, 1] - 0.5)
         for u, idx in zip(uncertainty, batch):
             heapq.heappush(self.candidates, (u, idx))
+
+    def revert_last_annotation(self):
+        if not self.annotations:
+            return
+        # Pop last annotation
+        idx, label = self.annotations.pop()
+        # Remove from annotation file: rewrite file
+        with open(self.annotation_file, "w", newline="") as f:
+            writer = csv.writer(f)
+            for aidx, albl in self.annotations:
+                writer.writerow([aidx, albl])
+        # Retrain model from scratch
+        self.retrain(self.annotations)
+        # If current_sample was chosen after that annotation, re-choose current sample
+        # Actually retrain() resets state and we re-choose next sample sets, so current_sample remains valid.
+        # Just ensure we are consistent. We'll leave current_sample as is. If user wants to revert multiple times, they can.
+
+    def get_probability_for(self, idx):
+        # Return model probability for a single sample
+        X = self.data_mgr.get_features(idx)[np.newaxis, :]
+        probs = self.model.predict_proba(X)
+        return probs[0, 1]
 
 
 app_root = Path("")
@@ -289,6 +392,7 @@ async def homepage(request):
     idx = orchestrator.get_current_sample_index()
     if idx is None:
         return HTMLResponse("<h1>No more samples!</h1>")
+
     img = orchestrator.data_mgr.get_image(idx, center_crop=True)
     buf = io.BytesIO()
     img.save(buf, format="JPEG")
@@ -296,20 +400,59 @@ async def homepage(request):
     img_base64 = "data:image/jpeg;base64," + __import__("base64").b64encode(
         img_bytes
     ).decode("utf-8")
+
+    # Probability
+    prob = orchestrator.get_probability_for(idx)
+    prob_html = f"<p>Predicted Probability (Positive): {prob:.3f}</p>"
+
+    # Prefetch next image if available
+    next_idx = orchestrator.get_next_sample_index()
+    prefetch_img_html = ""
+    if next_idx is not None:
+        # Prefetch route
+        prefetch_img_html = f'<img id="prefetch" src="/prefetch?idx={next_idx}" style="display:none;" />'
+
+    # JavaScript for key handling: 'a' or Left Arrow = Negative, 'd' or Right Arrow = Positive, Backspace = Revert
+    script = """
+    <script>
+    document.addEventListener('keydown', function(event) {
+        if (event.key === 'a' || event.key === 'ArrowLeft') {
+            document.getElementById('negButton').click();
+        } else if (event.key === 'd' || event.key === 'ArrowRight') {
+            document.getElementById('posButton').click();
+        } else if (event.key === 'Backspace') {
+            event.preventDefault();
+            window.location.href = '/revert';
+        }
+    });
+    </script>
+    """
+
     html = f"""
     <html>
     <body>
     <h1>Sample {idx}</h1>
+    {prob_html}
     <img src="{img_base64}" width="512" height="512" />
-    <form method="POST" action="/label">
+    {prefetch_img_html}
+    <form method="POST" action="/label" id="labelForm">
         <input type="hidden" name="idx" value="{idx}" />
-        <button name="label" value="1">Positive</button>
-        <button name="label" value="0">Negative</button>
+        <button name="label" value="1" id="posButton">Positive (d/right)</button>
+        <button name="label" value="0" id="negButton">Negative (a/left)</button>
     </form>
+    {script}
     </body>
     </html>
     """
     return HTMLResponse(html)
+
+
+async def prefetch_handler(request):
+    idx = int(request.query_params["idx"])
+    img = orchestrator.data_mgr.get_image(idx, center_crop=True)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    return Response(buf.getvalue(), media_type="image/jpeg")
 
 
 async def label_handler(request):
@@ -317,7 +460,13 @@ async def label_handler(request):
     idx = int(form["idx"])
     label = int(form["label"])
     orchestrator.handle_annotation(idx, label)
-    return HTMLResponse("<h1>Annotation saved! <a href='/'>Next</a></h1>")
+    # Redirect immediately to homepage (no confirmation)
+    return RedirectResponse("/", status_code=303)
+
+
+async def revert_handler(request):
+    orchestrator.revert_last_annotation()
+    return RedirectResponse("/", status_code=303)
 
 
 app = Starlette(
@@ -325,5 +474,7 @@ app = Starlette(
     routes=[
         Route("/", homepage),
         Route("/label", label_handler, methods=["POST"]),
+        Route("/prefetch", prefetch_handler),
+        Route("/revert", revert_handler),
     ],
 )
