@@ -458,8 +458,8 @@ async def homepage(request):
     {prefetch_img_html}
     <form method="POST" action="/label" id="labelForm">
         <input type="hidden" name="idx" value="{idx}" />
-        <button name="label" value="1" id="posButton">Positive (d/right)</button>
         <button name="label" value="0" id="negButton">Negative (a/left)</button>
+        <button name="label" value="1" id="posButton">Positive (d/right)</button>
     </form>
     {script}
     </body>
