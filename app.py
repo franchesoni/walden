@@ -219,9 +219,7 @@ class DataManager:
 
 class IncrementalModel:
     def __init__(self, n_features):
-        self.clf = SGDClassifier(
-            loss="log_loss", warm_start=True, class_weight="balanced"
-        )
+        self.clf = SGDClassifier(loss="log_loss", warm_start=True)
         self.scaler = StandardScaler()
         self._initialized = False
         self.n_features = n_features
