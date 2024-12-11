@@ -208,7 +208,7 @@ class DataManager:
 
     def mark_labeled(self, idx):
         self.labeled_indices.add(idx)
-        self.unlabeled_indices.remove(idx)
+        self.unlabeled_indices.discard(idx)
 
     def unmark_labeled(self, idx):
         # Used during revert
@@ -240,7 +240,7 @@ class IncrementalModel:
 
     def add_annotation(self, feat, label):
         self.annotated_feats.append(feat)
-        self.annotated_labels.append(label)
+        self.annotated_labels.append(int(label))
 
     def set_annotations(self, feats, labels):
         self.annotated_feats = feats
@@ -332,6 +332,7 @@ class Orchestrator:
         self.annotations = annotations.copy()
         feats = [self.data_mgr.get_features(idx) for (idx, _) in annotations]
         labels = [lbl for (_, lbl) in annotations]
+        assert np.array([lbl in {0, 1} for lbl in labels]).all()
         self.model.set_annotations(feats, labels)
         self.model.fit()
         self.candidates.clear()
