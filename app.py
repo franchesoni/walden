@@ -1,3 +1,4 @@
+import tqdm
 import h5py
 import csv
 import heapq
@@ -20,9 +21,10 @@ class DataManager:
         self.labeled_indices = set()
 
         # Load features and bounding boxes
+        print("loading features and bounding boxes...")
         feats_list = []
         bboxes_list = []
-        for i in [1, 2, 3, 5, 6]:
+        for i in tqdm.tqdm([1, 2, 3, 5, 6]):
             imgname = f"img{i}"
             feat_file = Path(root / "out" / imgname / "masks" / "features.h5")
             bbox_file = Path(root / "out" / imgname / "masks" / "global_bboxes.txt")
