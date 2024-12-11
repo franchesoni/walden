@@ -17,6 +17,9 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 
+DATASET = ["cell", "full"][0]
+COST = ["certainty", "minprob"][1]
+CSVFILE = ["annotations_lymphocyte.csv", "annotations_is_cell.csv", "annotations_lymphoplasmocyte.csv", "annotations_plasmocyte.csv"][0]
 
 class DataManager:
     def __init__(self, root: Path):
@@ -26,7 +29,7 @@ class DataManager:
         # Load features and bounding boxes
         print("Loading features and bounding boxes...")
 
-        data = pickle.load(open("full_dataset.pkl", "rb"))
+        data = pickle.load(open(f"{DATASET}_dataset.pkl", "rb"))
         self.feats, self.bboxes = data["feats"], data["bboxes"]
 
         self.N = self.feats.shape[0]
@@ -269,7 +272,9 @@ class IncrementalModel:
 
 
 class Orchestrator:
-    def __init__(self, root_dir, annotation_file, score_interval=8, n_iter=10):
+    def __init__(self, root_dir, annotation_file, score_interval=8, n_iter=10, sample_cost="certainty"):
+        assert sample_cost in ["certainty", "minprob"]
+        self.sample_cost = sample_cost
         self.data_mgr = DataManager(root_dir)
         self.model = IncrementalModel(
             n_features=self.data_mgr.feats.shape[1], n_iter=n_iter
@@ -377,8 +382,11 @@ class Orchestrator:
             return
         X = self.data_mgr.feats
         probs = self.model.predict_proba(X)
-        certainties = np.abs(probs[:, 1] - 0.5)
-        sorted_indices = np.argsort(certainties)
+        if self.sample_cost == "certainty":
+            sample_cost = np.abs(probs[:, 1] - 0.5)
+        elif self.sample_cost == "minprob": 
+            sample_cost = probs[:, 0]
+        sorted_indices = np.argsort(sample_cost)
         self.candidates = [
             ind
             for ind in sorted_indices[: self.score_interval * 10].tolist()
@@ -415,9 +423,10 @@ class Orchestrator:
 app_root = Path("")
 orchestrator = Orchestrator(
     root_dir=app_root,
-    annotation_file=Path("annotations_is_cell.csv"),
+    annotation_file=Path(CSVFILE),
     score_interval=8,
     n_iter=10,
+    sample_cost=COST,  
 )
 
 
