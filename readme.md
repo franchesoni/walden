@@ -58,3 +58,7 @@ quyet tmux 3
 img6 
 
 
+# current
+- create a binary interactive annotation tool, e.g. entropy based, to build labels for cell / no cell classification
+run with 
+`uvicorn app:app --reload --host 0.0.0.0 --port 8009`
