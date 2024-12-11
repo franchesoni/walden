@@ -170,3 +170,7 @@ checkpoints/
 slides_dataset/
 slides_dataset.tar
 dataset/
+annotations/
+*.csv
+*.pkl
+predictions.geojson
