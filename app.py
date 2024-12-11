@@ -19,7 +19,13 @@ from starlette.staticfiles import StaticFiles
 
 DATASET = ["cell", "full"][0]
 COST = ["certainty", "minprob"][1]
-CSVFILE = ["annotations_lymphocyte.csv", "annotations_is_cell.csv", "annotations_lymphoplasmocyte.csv", "annotations_plasmocyte.csv"][0]
+CSVFILE = [
+    "annotations_lymphocyte.csv",
+    "annotations_is_cell.csv",
+    "annotations_lymphoplasmocyte.csv",
+    "annotations_plasmocyte.csv",
+][0]
+
 
 class DataManager:
     def __init__(self, root: Path):
@@ -272,7 +278,14 @@ class IncrementalModel:
 
 
 class Orchestrator:
-    def __init__(self, root_dir, annotation_file, score_interval=8, n_iter=10, sample_cost="certainty"):
+    def __init__(
+        self,
+        root_dir,
+        annotation_file,
+        score_interval=8,
+        n_iter=10,
+        sample_cost="certainty",
+    ):
         assert sample_cost in ["certainty", "minprob"]
         self.sample_cost = sample_cost
         self.data_mgr = DataManager(root_dir)
@@ -384,7 +397,7 @@ class Orchestrator:
         probs = self.model.predict_proba(X)
         if self.sample_cost == "certainty":
             sample_cost = np.abs(probs[:, 1] - 0.5)
-        elif self.sample_cost == "minprob": 
+        elif self.sample_cost == "minprob":
             sample_cost = probs[:, 0]
         sorted_indices = np.argsort(sample_cost)
         self.candidates = [
@@ -426,7 +439,7 @@ orchestrator = Orchestrator(
     annotation_file=Path(CSVFILE),
     score_interval=8,
     n_iter=10,
-    sample_cost=COST,  
+    sample_cost=COST,
 )
 
 
