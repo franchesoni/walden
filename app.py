@@ -1,3 +1,4 @@
+import pickle
 import tqdm
 import h5py
 import csv
@@ -6,8 +7,10 @@ import io
 from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
-from sklearn.linear_model import SGDClassifier
-from sklearn.preprocessing import StandardScaler
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
 
 from starlette.applications import Starlette
 from starlette.responses import HTMLResponse, RedirectResponse, Response
@@ -21,23 +24,11 @@ class DataManager:
         self.labeled_indices = set()
 
         # Load features and bounding boxes
-        print("loading features and bounding boxes...")
-        feats_list = []
-        bboxes_list = []
-        for i in tqdm.tqdm([1, 2, 3, 5, 6]):
-            imgname = f"img{i}"
-            feat_file = Path(root / "out" / imgname / "masks" / "features.h5")
-            bbox_file = Path(root / "out" / imgname / "masks" / "global_bboxes.txt")
+        print("Loading features and bounding boxes...")
 
-            feat = h5py.File(feat_file, "r")["dataset"][:]
-            bboxs = self._load_bounding_boxes_csv(bbox_file, i)
+        data = pickle.load(open("full_dataset.pkl", "rb"))
+        self.feats, self.bboxes = data["feats"], data["bboxes"]
 
-            assert len(feat) == len(bboxs)
-            feats_list.append(feat)
-            bboxes_list.append(bboxs)
-
-        self.feats = np.concatenate(feats_list, axis=0)  # (N, D)
-        self.bboxes = np.concatenate(bboxes_list, axis=0)  # (N, 5)
         self.N = self.feats.shape[0]
         self.unlabeled_indices = set(range(self.N))
 
@@ -216,68 +207,86 @@ class DataManager:
         self.unlabeled_indices.add(idx)
 
     def get_unlabeled_indices(self):
-        return list(self.unlabeled_indices)
+        return np.array(list(self.unlabeled_indices))
+
+
+class PyTorchLogisticRegression(nn.Module):
+    def __init__(self, n_features):
+        super().__init__()
+        self.linear = nn.Linear(n_features, 1)
+
+    def forward(self, x):
+        return torch.sigmoid(self.linear(x))
 
 
 class IncrementalModel:
-    def __init__(self, n_features):
-        self.clf = SGDClassifier(loss="log_loss", warm_start=True)
-        self.scaler = StandardScaler()
-        self._initialized = False
+    def __init__(self, n_features, n_iter=10):
         self.n_features = n_features
+        self.n_iter = n_iter
+        self.model = PyTorchLogisticRegression(self.n_features)
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.1, weight_decay=0.01)
+        self.loss_fn = nn.BCELoss()
+        self.annotated_feats = []
+        self.annotated_labels = []
 
-    def partial_fit(self, X, y):
-        X = np.atleast_2d(X)
-        y = np.asarray(y)
-        if not self._initialized:
-            X = self.scaler.fit_transform(X)
-            self.clf.partial_fit(X, y, classes=[0, 1])
-            self._initialized = True
-        else:
-            self.scaler = self.scaler.partial_fit(X)
-            X = self.scaler.transform(X)
-            self.clf.partial_fit(X, y)
-        self.debug_probabilities(X)
+    def add_annotation(self, feat, label):
+        self.annotated_feats.append(feat)
+        self.annotated_labels.append(label)
+
+    def set_annotations(self, feats, labels):
+        self.annotated_feats = feats
+        self.annotated_labels = labels
+
+    def fit(self):
+        if len(self.annotated_feats) == 0:
+            return
+        X = torch.tensor(np.array(self.annotated_feats), dtype=torch.float32)
+        y = torch.tensor(np.array(self.annotated_labels), dtype=torch.float32).view(
+            -1, 1
+        )
+
+        self.model.train()
+        for _ in range(self.n_iter):
+            self.optimizer.zero_grad()
+            preds = self.model(X)
+            loss = self.loss_fn(preds, y)
+            loss.backward()
+            self.optimizer.step()
+            print("Loss:", loss.item(), end="\r")
 
     def predict_proba(self, X):
-        if not self._initialized:
+        if len(self.annotated_feats) == 0:
+            # no training done, return 0.5
             return np.ones((len(X), 2)) * 0.5
-        X = self.scaler.transform(X)
-        scores = self.clf.decision_function(X)
-        probs = 1.0 / (1.0 + np.exp(-scores))
-        return np.vstack([1 - probs, probs]).T
 
-    def reset(self):
-        # Reset model
-        self.clf = SGDClassifier(loss="log_loss", warm_start=True)
-        self._initialized = False
-
-    def debug_probabilities(self, X):
-        X_scaled = self.scaler.transform(X)
-        probs = self.clf.predict_proba(X_scaled)
-        print("Probabilities range:", np.min(probs[:, 1]), "-", np.max(probs[:, 1]))
+        self.model.eval()
+        with torch.no_grad():
+            X_t = torch.tensor(X, dtype=torch.float32)
+            preds = self.model(X_t).numpy().flatten()
+        # preds is probability of class 1
+        probs = np.vstack([1 - preds, preds]).T
+        return probs
 
 
 class Orchestrator:
-    def __init__(self, root_dir, annotation_file):
+    def __init__(self, root_dir, annotation_file, score_interval=8, n_iter=10):
         self.data_mgr = DataManager(root_dir)
-        self.model = IncrementalModel(n_features=self.data_mgr.feats.shape[1])
+        self.model = IncrementalModel(
+            n_features=self.data_mgr.feats.shape[1], n_iter=n_iter
+        )
         self.annotation_file = annotation_file
         self.annotations = []  # store (idx, label)
 
         self.current_sample = None
-        self.candidates = []
-        self.previous_samples = []  # Stack for backtracking
-        self.batch_size = 10
+        self.previous_samples = []
+        self.positive_count = 0
+        self.negative_count = 0
 
-        self.positive_count = 0  # Counter for positive annotations
-        self.negative_count = 0  # Counter for negative annotations
-
-        self.warmup_samples = 10
-        self.warmup_idx = np.random.choice(
-            self.data_mgr.N, self.warmup_samples, replace=False
-        ).tolist()
-        self.current_sample = self.warmup_idx.pop() if self.warmup_idx else None
+        self.score_interval = score_interval
+        self.candidates = np.random.choice(
+            self.data_mgr.N, self.score_interval, replace=False
+        ).tolist()  # get score_interval random samples initially
+        self.current_sample = self.candidates.pop(0)
         self.next_sample = None  # For prefetching
 
         # If annotation file exists, load it and retrain to restore state
@@ -298,16 +307,15 @@ class Orchestrator:
         self.retrain(loaded_annotations)
 
     def retrain(self, annotations):
-        # Reset model and data sets
-        self.model.reset()
         self.data_mgr.labeled_indices.clear()
         self.data_mgr.unlabeled_indices = set(range(self.data_mgr.N))
-        for idx, label in annotations:
-            X = self.data_mgr.get_features(idx)
-            self.model.partial_fit(X[np.newaxis, :], [label])
+        for idx, _ in annotations:
             self.data_mgr.mark_labeled(idx)
         self.annotations = annotations.copy()
-        # Clear candidates so they are re-generated on next request
+        feats = [self.data_mgr.get_features(idx) for (idx, _) in annotations]
+        labels = [lbl for (_, lbl) in annotations]
+        self.model.set_annotations(feats, labels)
+        self.model.fit()
         self.candidates.clear()
 
     def get_current_sample_index(self):
@@ -330,8 +338,9 @@ class Orchestrator:
             self.negative_count += 1
 
         # Update model
-        X = self.data_mgr.get_features(idx)
-        self.model.partial_fit(X[np.newaxis, :], [label])
+        feat = self.data_mgr.get_features(idx)
+        self.model.add_annotation(feat, label)
+        self.model.fit()
         self.data_mgr.mark_labeled(idx)
         self.annotations.append((idx, label))
 
@@ -342,51 +351,39 @@ class Orchestrator:
         self._pick_next_sample()
 
     def _pick_next_sample(self):
-        if self.warmup_idx:
-            self.current_sample = self.warmup_idx.pop()
+        if not self.candidates:
+            self.refill_candidates()
+        if self.candidates:
+            self.current_sample = self.candidates.pop(0)
         else:
-            if not self.candidates:
-                self.refill_candidates()
-            if self.candidates:
-                _, self.current_sample = heapq.heappop(self.candidates)
-            else:
-                self.current_sample = None
+            self.current_sample = None
 
         self._ensure_next_sample()
 
     def _ensure_next_sample(self):
         # Prefetch next sample from candidates if available
-        if self.warmup_idx:
-            # Next sample is known
-            if self.warmup_idx:
-                self.next_sample = (
-                    self.warmup_idx[-1] if len(self.warmup_idx) > 0 else None
-                )
-            else:
-                self.next_sample = None
+        # If we have candidates, look at the next one in the heap
+        if len(self.candidates) < 2:
+            self.refill_candidates()
+        if len(self.candidates) > 0:
+            # Peek next candidate without popping it
+            self.next_sample = self.candidates[0]
         else:
-            # If we have candidates, look at the next one in the heap
-            if len(self.candidates) < 2:
-                self.refill_candidates()
-            if len(self.candidates) > 0:
-                # Peek next candidate without popping it
-                self.next_sample = self.candidates[0][1]
-            else:
-                self.next_sample = None
+            self.next_sample = None
 
     def refill_candidates(self):
         unlabeled = self.data_mgr.get_unlabeled_indices()
-        if not unlabeled:
+        if not len(unlabeled):
             return
-        batch = np.random.choice(
-            unlabeled, size=min(self.batch_size, len(unlabeled)), replace=False
-        )
-        X = np.array([self.data_mgr.get_features(i) for i in batch])
+        X = self.data_mgr.feats
         probs = self.model.predict_proba(X)
-        # certainty = distance from 0.5
-        certainty = np.abs(probs[:, 1] - 0.5)
-        for u, idx in zip(certainty, batch):
-            heapq.heappush(self.candidates, (u, idx))
+        certainties = np.abs(probs[:, 1] - 0.5)
+        sorted_indices = np.argsort(certainties)
+        self.candidates = [
+            ind
+            for ind in sorted_indices[: self.score_interval * 10].tolist()
+            if ind in unlabeled
+        ][: self.score_interval]
 
     def revert_last_annotation(self):
         if not self.annotations or not self.previous_samples:
@@ -416,7 +413,12 @@ class Orchestrator:
 
 
 app_root = Path("")
-orchestrator = Orchestrator(root_dir=app_root, annotation_file=Path("annotations.csv"))
+orchestrator = Orchestrator(
+    root_dir=app_root,
+    annotation_file=Path("annotations_is_cell.csv"),
+    score_interval=8,
+    n_iter=10,
+)
 
 
 async def homepage(request):
