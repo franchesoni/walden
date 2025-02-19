@@ -24,7 +24,7 @@ CSVFILE = [
     "annotations_is_cell.csv",
     "annotations_lymphoplasmocyte.csv",
     "annotations_plasmocyte.csv",
-][0]
+][3]
 
 
 class DataManager:
@@ -159,7 +159,7 @@ class DataManager:
 
         draw = ImageDraw.Draw(composite_image)
         draw.rectangle(
-            [bbox_col_rel, bbox_row_rel, bbox_right_rel, bbox_bottom_rel],
+            [bbox_col_rel-10, bbox_row_rel-10, bbox_right_rel+10, bbox_bottom_rel+10],
             outline="green",
             width=3,
         )
@@ -534,7 +534,7 @@ async def revert_handler(request):
 
 
 app = Starlette(
-    debug=True,
+    debug=False,
     routes=[
         Route("/", homepage),
         Route("/label", label_handler, methods=["POST"]),
